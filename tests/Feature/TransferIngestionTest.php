@@ -84,14 +84,10 @@ it('returns a per-station summary that ignores other stations', function () {
     ]);
 });
 
-it('returns a zero summary for an unknown station', function () {
+it('returns 404 for an unknown station', function () {
     $this->getJson('/stations/UNKNOWN/summary')
-        ->assertOk()
-        ->assertJson([
-            'station_id'            => 'UNKNOWN',
-            'total_approved_amount' => 0,
-            'events_count'          => 0,
-        ]);
+        ->assertNotFound()
+        ->assertJson(['message' => "Station 'UNKNOWN' not found."]);
 });
 
 it('only counts approved events toward the total but counts all statuses in events_count', function () {

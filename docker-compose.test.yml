@@ -1,0 +1,12 @@
+# Test environment override.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm app
+#
+# Overrides two env vars so tests never touch the production DB:
+#   DB_DATABASE=petroapp_test  → isolated test schema (created by postgres-init.sql)
+#   RUN_MIGRATIONS=false       → entrypoint skips migrate; RefreshDatabase owns it
+
+services:
+  app:
+    environment:
+      DB_DATABASE: petroapp_test
+      RUN_MIGRATIONS: "false"

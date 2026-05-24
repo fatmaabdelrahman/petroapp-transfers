@@ -14,12 +14,22 @@ final class StationSummaryController extends Controller
     /**
      * GET /stations/{station_id}/summary
      *
-     * `events_count` includes events of ALL statuses (spec default).
-     * `total_approved_amount` sums only events with status == "approved".
+     * Returns 404 if the station has no recorded events — a station only
+     * "exists" in this system once it has received at least one transfer event.
+     * We have no separate stations table, so zero events = unknown station.
+     *
+     * `events_count`          → all statuses (spec default, documents reality of what arrived).
+     * `total_approved_amount` → approved only (spec requirement).
      */
     public function show(string $stationId): JsonResponse
     {
         $summary = $this->repository->summaryFor($stationId);
+
+        if ($summary->eventsCount === 0) {
+            return response()->json([
+                'message' => "Station '{$stationId}' not found.",
+            ], 404);
+        }
 
         return response()->json([
             'station_id'            => $summary->stationId,

@@ -1,5 +1,8 @@
 .PHONY: run stop test test-concurrency fresh shell logs build
 
+# Shorthand for the test compose stack (base + override)
+TEST_COMPOSE = docker compose -f docker-compose.yml -f docker-compose.test.yml
+
 build:
 	docker compose build
 
@@ -9,20 +12,17 @@ run:
 stop:
 	docker compose down
 
-# Run unit + feature tests against petroapp_test (never touches the app DB).
-# -e DB_DATABASE overrides the docker-compose system env var at the OS level.
-# RUN_MIGRATIONS=false skips the entrypoint migrate so RefreshDatabase owns it.
+# Run unit + feature tests.
+# Uses docker-compose.test.yml to swap DB_DATABASE → petroapp_test
+# so tests never touch the production DB.
 test:
-	docker compose run --rm \
-		-e DB_DATABASE=petroapp_test \
-		-e RUN_MIGRATIONS=false \
-		app php artisan test
+	$(TEST_COMPOSE) run --rm app php artisan test
 
-# Run the concurrency proof test against the live HTTP app.
-# Requires the stack to be running: `make run` in another terminal.
+# Run the concurrency proof test (requires `make run` in another terminal).
 test-concurrency:
 	docker compose exec -e CONCURRENCY_BASE_URL=http://localhost:8000 app php artisan test --filter=ConcurrencyTest
 
+# Drop and recreate the app DB schema.
 fresh:
 	docker compose run --rm app php artisan migrate:fresh
 
