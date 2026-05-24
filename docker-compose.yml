@@ -1,0 +1,45 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: petroapp-transfers:latest
+    container_name: petroapp-app
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+      APP_KEY: ${APP_KEY:-base64:Y2hhbmdlbWVjaGFuZ2VtZWNoYW5nZW1lY2hhbmdlbWU=}
+      DB_CONNECTION: pgsql
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: petroapp
+      DB_USERNAME: petroapp
+      DB_PASSWORD: petroapp
+      LOG_CHANNEL: stderr
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    container_name: petroapp-db
+    environment:
+      POSTGRES_DB: petroapp
+      POSTGRES_USER: petroapp
+      POSTGRES_PASSWORD: petroapp
+    ports:
+      - "5432:5432"
+    volumes:
+      - petroapp_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U petroapp -d petroapp"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  petroapp_pg:

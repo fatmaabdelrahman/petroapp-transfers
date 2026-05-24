@@ -1,0 +1,108 @@
+openapi: 3.1.0
+info:
+  title: PetroApp Transfer Events API
+  version: 1.0.0
+  description: |
+    Ingest station transfer events idempotently and expose a per-station
+    reconciliation summary.
+servers:
+  - url: http://localhost:8000
+    description: Local docker-compose
+paths:
+  /transfers:
+    post:
+      summary: Ingest a batch of transfer events
+      description: |
+        Idempotent by `event_id` and concurrency-safe. Uses partial-accept:
+        invalid events are reported in `rejected[]`; valid events are stored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+            examples:
+              basic:
+                value:
+                  events:
+                    - event_id: "evt-001"
+                      station_id: "S1"
+                      amount: 100.5
+                      status: "approved"
+                      created_at: "2026-02-19T10:00:00Z"
+      responses:
+        '200':
+          description: Ingestion result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResponse'
+        '400':
+          description: Payload shape invalid (missing/empty `events`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /stations/{station_id}/summary:
+    get:
+      summary: Reconciliation summary for a station
+      parameters:
+        - in: path
+          name: station_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Summary (zeros if station unknown)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StationSummary'
+components:
+  schemas:
+    TransferEventInput:
+      type: object
+      required: [event_id, station_id, amount, status, created_at]
+      properties:
+        event_id:    { type: string, maxLength: 64 }
+        station_id:  { type: string, maxLength: 64 }
+        amount:      { type: number, minimum: 0 }
+        status:      { type: string, maxLength: 32, description: "Only 'approved' contributes to totals." }
+        created_at:  { type: string, format: date-time, description: "ISO 8601" }
+    IngestRequest:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/TransferEventInput' }
+    IngestResponse:
+      type: object
+      required: [inserted, duplicates, rejected]
+      properties:
+        inserted:   { type: integer, minimum: 0 }
+        duplicates: { type: integer, minimum: 0 }
+        rejected:
+          type: array
+          items:
+            type: object
+            properties:
+              index:    { type: integer }
+              event_id: { type: [string, "null"] }
+              errors:
+                type: array
+                items: { type: string }
+    StationSummary:
+      type: object
+      required: [station_id, total_approved_amount, events_count]
+      properties:
+        station_id:            { type: string }
+        total_approved_amount: { type: number }
+        events_count:          { type: integer, description: "Count of all events (any status) for the station." }
+    Error:
+      type: object
+      properties:
+        message: { type: string }
+        errors:  { type: object, additionalProperties: true }
