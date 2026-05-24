@@ -13,9 +13,8 @@ use App\Domain\TransferEvent;
  * Thread-safe in-memory store used by unit tests and as a reference implementation
  * to prove the repository abstraction is genuinely swappable.
  *
- * Concurrency note: PHP per-process is single-threaded, but the same instance may
- * be reused across calls inside a single test. We guard the critical section with
- * a mutex on the events map so two `ingestBatch` calls cannot interleave.
+ * Uses bcadd() for amount accumulation to match the NUMERIC(14,2) precision
+ * of the Postgres-backed implementation.
  */
 final class InMemoryTransferEventRepository implements TransferEventRepository
 {
@@ -27,7 +26,7 @@ final class InMemoryTransferEventRepository implements TransferEventRepository
      */
     public function ingestBatch(array $events): IngestResult
     {
-        $inserted = 0;
+        $inserted   = 0;
         $duplicates = 0;
 
         foreach ($events as $event) {
@@ -35,7 +34,7 @@ final class InMemoryTransferEventRepository implements TransferEventRepository
                 $duplicates++;
                 continue;
             }
-            // Atomic CAS-style insert: the array key acts as a unique constraint.
+            // Array key acts as a unique constraint — same semantics as PK.
             $this->events[$event->eventId] = $event;
             $inserted++;
         }
@@ -45,8 +44,8 @@ final class InMemoryTransferEventRepository implements TransferEventRepository
 
     public function summaryFor(string $stationId): StationSummary
     {
-        $count = 0;
-        $approvedTotal = 0.0;
+        $count         = 0;
+        $approvedTotal = '0.00';
 
         foreach ($this->events as $event) {
             if ($event->stationId !== $stationId) {
@@ -54,14 +53,15 @@ final class InMemoryTransferEventRepository implements TransferEventRepository
             }
             $count++;
             if ($event->status === 'approved') {
-                $approvedTotal += $event->amount;
+                // bcadd preserves decimal precision — same as Postgres NUMERIC
+                $approvedTotal = bcadd($approvedTotal, $event->amount, 2);
             }
         }
 
         return new StationSummary(
-            stationId: $stationId,
-            totalApprovedAmount: round($approvedTotal, 2),
-            eventsCount: $count,
+            stationId:           $stationId,
+            totalApprovedAmount: (float) $approvedTotal,
+            eventsCount:         $count,
         );
     }
 }
