@@ -20,9 +20,10 @@ Idempotent, concurrency-safe ingestion of station transfer events with a per-sta
 
 ```bash
 cp .env.example .env
-make run                    # docker compose up --build
-# app listens on http://localhost:8000
+make run
 ```
+
+> `make run` runs `docker compose up --build` — app listens on **http://localhost:8000**
 
 The entrypoint waits for Postgres, runs migrations, then starts the dev server.  
 On first boot, `docker/postgres-init.sql` creates the `petroapp_test` database automatically.
