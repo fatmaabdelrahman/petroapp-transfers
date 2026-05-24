@@ -24,7 +24,8 @@ make run                    # docker compose up --build
 # app listens on http://localhost:8000
 ```
 
-The entrypoint waits for Postgres, runs migrations, then starts the dev server.
+The entrypoint waits for Postgres, runs migrations, then starts the dev server.  
+On first boot, `docker/postgres-init.sql` creates the `petroapp_test` database automatically.
 
 ### Local (only if you have PHP 8.4 + Postgres)
 
@@ -37,16 +38,18 @@ php artisan serve
 ## How to Run Tests
 
 ```bash
-# Unit + feature tests (Postgres-backed, RefreshDatabase between tests)
+# Unit + feature tests — uses docker-compose.test.yml to isolate against
+# petroapp_test so tests never touch the production DB.
 make test
 
-# Concurrency proof test (requires the stack running in another terminal)
+# Concurrency proof test (requires `make run` in another terminal)
 make test-concurrency
 ```
 
-`make test` runs everything **except** the concurrency test, which is gated by the
-`CONCURRENCY_BASE_URL` env var. The concurrency test runs against a live HTTP
-server because that's the only honest way to prove HTTP-level race safety.
+`make test` composes `docker-compose.yml` + `docker-compose.test.yml`, which overrides
+`DB_DATABASE=petroapp_test` and `RUN_MIGRATIONS=false` so `RefreshDatabase` owns
+the test DB lifecycle entirely. The concurrency test is skipped until `CONCURRENCY_BASE_URL`
+is set — it must run against a live HTTP server to prove real HTTP-level race safety.
 
 ## API Examples
 
@@ -76,6 +79,13 @@ curl -s -X POST http://localhost:8000/transfers \
 ```bash
 curl -s http://localhost:8000/stations/S1/summary
 # → {"station_id":"S1","total_approved_amount":150.25,"events_count":2}
+```
+
+### Unknown station (404)
+
+```bash
+curl -s http://localhost:8000/stations/GHOST/summary
+# → 404 {"message":"Station 'GHOST' not found."}
 ```
 
 ### Partial-accept validation example
@@ -134,10 +144,13 @@ the same `event_id` simultaneously and asserts:
 |---|---|---|---|
 | Storage | Postgres | Native `ON CONFLICT ... RETURNING`, real PK constraint. | One more container vs SQLite — worth it. |
 | Batch strategy | **Partial accept** | Upstream is external; one bad event shouldn't block 999 good ones. Response extended with `rejected[]`. | Slightly richer response than spec example. |
-| `events_count` | **All statuses** (spec default) | Complements `total_approved_amount` (already approved-only). | Caller must note the two fields use different filters. |
+| `events_count` | **All statuses** (spec default) | Complements `total_approved_amount` (already approved-only). Counting both as approved would make them redundant. | Caller must note the two fields use different filters. |
+| Unknown station | **404** | A station exists in this system only once it has received an event. No separate stations table — zero events = unknown resource. | A station with only non-approved events is known (200) even though its total is 0. |
 | Concurrency | DB PK + `ON CONFLICT DO NOTHING RETURNING` | Single atomic statement; no app locks. | Postgres-specific syntax — isolated behind the repository interface. |
+| Validation | `IngestTransfersRequest` (shape) + `TransferIngestionService` (per-event) | Shape is fail-fast (400); per-event must loop to support partial-accept. Two concerns, two places. | FormRequest alone can't express partial-accept — splitting is intentional. |
+| `amount` type | `string` in PHP DTO | Preserves `NUMERIC(14,2)` precision — floats can't represent all decimals exactly. `bcadd()` used for in-memory accumulation. | Slightly less ergonomic than `float` for arithmetic; correctness wins. |
 | Repository | Port + Eloquent impl + InMemory impl | Satisfies "swappable store"; speeds up unit tests. | Two impls to keep aligned. |
-| Test framework | Pest 3 | Modern, concise; default in new Laravel installs. | Slightly less ubiquitous than raw PHPUnit (Pest *is* PHPUnit under the hood). |
+| Test isolation | `docker-compose.test.yml` override | Declarative — DB swap is visible in a file, not buried in Makefile flags. | Reviewer must know compose override files. |
 | Docker layout | Single `app` + `db` | Minimal surface area for the reviewer. | Not production-grade (no opcache, no nginx) — out of scope. |
 
 ### Why not an in-memory lock?
@@ -157,26 +170,35 @@ A raw query with `RETURNING event_id` gives an exact count.
 ```
 app/
   Domain/                                  # storage-agnostic value objects + port
-    TransferEvent.php
+    TransferEvent.php                      # amount: string (NUMERIC precision)
     StationSummary.php
     IngestResult.php
-    Contracts/TransferEventRepository.php
+    Contracts/TransferEventRepository.php  # port (swappable storage interface)
   Infrastructure/Persistence/
-    EloquentTransferEventRepository.php    # Postgres impl
-    InMemoryTransferEventRepository.php    # used by unit tests
-  Http/Controllers/
-    TransferController.php
-    StationSummaryController.php
-  Providers/DomainServiceProvider.php      # binds the port to Eloquent impl
+    EloquentTransferEventRepository.php    # Postgres impl (ON CONFLICT RETURNING)
+    InMemoryTransferEventRepository.php    # test impl (bcadd for precision)
+  Http/
+    Controllers/
+      TransferController.php               # thin: receive → delegate → respond
+      StationSummaryController.php         # 404 for unknown stations
+    Requests/
+      IngestTransfersRequest.php           # shape validation → 400
+  Services/
+    TransferIngestionService.php           # per-event validation + DTO construction
+    IngestResponse.php                     # typed service return value
+  Providers/DomainServiceProvider.php      # binds port to Eloquent impl
 database/migrations/
   2026_05_23_000000_create_transfer_events_table.php
 tests/
-  Feature/TransferIngestionTest.php        # 9 scenarios
-  Feature/ConcurrencyTest.php              # forked-process race test
-  Unit/InMemoryRepositoryTest.php
-docker/entrypoint.sh
+  Feature/TransferIngestionTest.php        # 10 scenarios
+  Feature/ConcurrencyTest.php              # 25 forked-process race test
+  Unit/InMemoryRepositoryTest.php          # proves abstraction is swappable
+docker/
+  entrypoint.sh                            # wait → migrate → serve
+  postgres-init.sql                        # creates petroapp_test on first boot
 Dockerfile
-docker-compose.yml
+docker-compose.yml                         # production stack
+docker-compose.test.yml                    # test overrides (DB + migrations)
 openapi.yaml
 Makefile
 ```
@@ -184,5 +206,6 @@ Makefile
 ### Operational notes
 
 - Logs go to **stderr** (`LOG_CHANNEL=stderr`) so `docker compose logs -f app` shows everything.
-- No secrets in the repo. The `APP_KEY` in `.env.example` is a clearly fake dev placeholder; `entrypoint.sh` regenerates one if missing.
+- No secrets in the repo. The `APP_KEY` in `.env.example` is a clearly fake dev placeholder.
 - Migrations run automatically on container startup (idempotent via `--force`).
+- `petroapp_test` is created by `docker/postgres-init.sql` on first volume init — no manual setup needed.
